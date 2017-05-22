@@ -13,14 +13,14 @@ class ModelFPCA():
 
     def __init__(self, data, for_logs=True, for_delta=True):
         """
-        model initialization 
+        model initialization
 
         args:
             data: dataframe with data on imp vols
                 contains cols...
             for_logs: whether to use log_ivs or ivs
             for_delta: whether to perform analysis on delta_(log)_ivs or
-                (log)_ivs 
+                (log)_ivs
         """
         self.data = data
         self._for_logs = for_logs
@@ -48,7 +48,7 @@ class ModelFPCA():
         * Note that dict to be loaded depends on self._for_logs:
             If it's true, the dict with name integs_logs.pkl is loaded
             o/w, integs.pkl
-                into correpsonding attribute of class-instance 
+                into correpsonding attribute of class-instance
         """
         filename = 'integs_logs.pkl' if self._for_logs else 'integs.pkl'
         filepath = os.path.join(dst, filename) if dst is not None else filename
@@ -81,6 +81,10 @@ class ModelFPCA():
         self.epsilon = epsilon
 
     def compute_smoothers_and_basis(self):
+        """
+        add dict _smoothed_ivs with smoothers
+            to self._all_dates
+        """
         # compute smoothers
         self._smoothed_ivs = {}
         for dat in self._all_dates:
@@ -140,9 +144,8 @@ class ModelFPCA():
         new_st = all_dts[st_pos + step]
         new_end = all_dts[end_pos + step]
 
-        # print(new_st, new_end)
-
-        self.set_range(st_date=new_st, end_date=new_end, from_start=False)
+        self.set_range(st_date=new_st, end_date=new_end,
+                       from_start=False)
 
     @property
     def _matrix_C(self):
@@ -152,7 +155,6 @@ class ModelFPCA():
             df = self._integs_df
 
         arr_integs = df.loc[self._frame_dates, :].sort_index().values
-        # print(len(arr_integs))
         term_1 = np.dot(arr_integs.transpose(), arr_integs) / \
             len(self._frame_dates)
         means = arr_integs.mean(axis=0).reshape(-1, 1)
@@ -189,7 +191,7 @@ class ModelFPCA():
         """
         Note that non-normalized projections are computed here
         That is, non-normalized eigmodes are taken and
-        sigmas are projected on them  
+        sigmas are projected on them
         """
         if self._for_delta:
             df = self._delta_integs_df
@@ -280,25 +282,54 @@ class ModelFPCA():
 
     @property
     def _eigennorms(self):
+        """
+        calculate squared-norms of eigenmodes
+        """
         return np.dot(np.dot(self._matrix_A, self._matrix_B),
                       self._matrix_A.transpose()).diagonal()
 
     @property
     def pc_series_sq_normalized(self):
+        """
+        normalize series of pcs on norms of eigenmodes
+        """
         return self.pc_series / self._eigennorms
 
     def _get_update(self, pc_coeffs, n_comps=2):
         """
         returns update based on array of pc_coeffs
-        n_comps also supplemented
+            n_comps also supplemented
 
         pc_coeffs are assumed to be squared normalized
+
+
         """
         pc_coeffs = np.squeeze(np.asarray(pc_coeffs)
                                ).reshape(-1)[:n_comps].reshape(1, n_comps)
         basis_coeffs = np.dot(pc_coeffs, self._matrix_A[:n_comps, ])
         #  print(basis_coeffs.shape)
         return self._get_basis_poly(basis_coeffs)
+
+    @staticmethod
+    def _eval_fit(fit, p_fit, metric='mape'):
+        """
+        evaluate fit quality of fit against p_fit (perfect fit)
+        metric can be either
+            'mape' - mean absolite percentage error
+            'mae' - mean absolute error
+            'mse' - mean squared error
+            'rmse' - root mean squared error
+        """
+        p_fit, fit = np.asarray(p_fit), np.asarray(fit)
+        devs = np.abs(p_fit - fit)
+        if metric == 'mape':
+            return np.mean(devs / np.abs(p_fit))
+        elif metric == 'mae':
+            return np.mean(devs)
+        elif metric == 'mse':
+            return np.mean(np.square(devs))
+        elif metric == 'rmse':
+            return np.sqrt(np.mean(np.square(devs)))
 
     def assess_fit_quality(self, day, fit, with_smoothed=False,
                            metric='mape'):
@@ -313,10 +344,15 @@ class ModelFPCA():
                 smoothed ivs rather than real
                 note that smoothers are simple ivs,
                 not logs
+            metric: evaluation metric. Can be either
+                mape, mae, rmse, mse, or a list of
+                any of those
         """
         pts = self.data[self.data.date == day][
             ['maturity', 'moneyness', 'imp_vol']].values
 
+        # ground-truth function
+        # depends o the number of pts for a specific day
         def perfect_fit(i):
             tau, m = pts[i, 0], pts[i, 1]
             if with_smoothed:
@@ -341,30 +377,12 @@ class ModelFPCA():
         p_fits = np.asarray(p_fits)
 
         if isinstance(metric, str):
-            if metric == 'mape':
-                return np.mean((np.abs(fits - p_fits)) / np.abs(p_fits))
-            elif metric == 'mae':
-                return np.mean(np.abs(fits - p_fits))
-            elif metric == 'mse':
-                return np.mean(np.square(fits - p_fits))
-            elif metric == 'rmse':
-                return np.sqrt(np.mean(np.square(fits - p_fits)))
+            return self._eval_fit(fits, p_fits, metric)
 
         elif isinstance(metric, list):
-            res = []
-            for metr in metric:
-                if metr == 'mape':
-                    val = np.mean((np.abs(fits - p_fits)) / np.abs(p_fits))
-                elif metr == 'mae':
-                    val = np.mean(np.abs(fits - p_fits))
-                elif metr == 'mse':
-                    val = np.mean(np.square(fits - p_fits))
-                elif metr == 'rmse':
-                    val = np.sqrt(np.mean(np.square(fits - p_fits)))
-
-                res.append(val)
+            res = [self._eval_fit(fits, p_fits, metr) for metr in metric]
             return res
-
+    
     def in_sample_fit(self, day, n_comps=2):
         """
         return in-sample fit given day inside model range
@@ -372,9 +390,15 @@ class ModelFPCA():
         if day not in self._frame_dates:
             raise ValueError('day outside of model range')
 
+        """
+        calculate pc-based adjustment to fit of ivs
+            will be added to either mean-ivs or lagged-ivs
+        """
+        pcs_sq_norm = self.pc_series_sq_normalized.loc[day, :]
+        pcs_sq_norm = np.asarray(pcs_sq_norm)[:n_comps]
+        update = self._get_update(pcs_sq_norm, n_comps)
+
         if not self._for_delta:
-            pcs_sq_norm = self.pc_series_sq_normalized.loc[day, :]
-            pcs_sq_norm = np.asarray(pcs_sq_norm)[:n_comps]
             update = self._get_update(pcs_sq_norm, n_comps)
             mean = self._mean_ivs
             # if not for delta
@@ -390,10 +414,7 @@ class ModelFPCA():
             pos_lagged = self._all_dates.index(day) - 1
             dat_lagged = self._all_dates[pos_lagged]
             ivs_lagged = self._smoothed_ivs[dat_lagged]
-            pcs_sq_norm = self.pc_series_sq_normalized.loc[day, :]
-            pcs_sq_norm = np.asarray(pcs_sq_norm)[:n_comps]
-            update = self._get_update(pcs_sq_norm, n_comps)
-
+            
             def fit(tau, m):
                 if self._for_logs:
                     return np.log(ivs_lagged(tau, m)) + update(tau, m)
@@ -444,6 +465,7 @@ class ModelFPCA():
             # pos_lagged = self._all_dates.index(day) - 1
             # dat_lagged = self._all_dates[pos_lagged]
             ivs_lagged = self._smoothed_ivs[day]
+
             def fit(tau, m):
                 if self._for_logs:
                     return np.log(ivs_lagged(tau, m)) + update(tau, m)
@@ -451,21 +473,15 @@ class ModelFPCA():
                     return ivs_lagged(tau, m) + update(tau, m)
             return fit
 
-
     def get_ith_eigenmode(self, i):
+        """
+        get i-th eigenmode comoputed using model range
+        args:
+            i - number of eigenmode
+        returns callable (function object)
+        """
         eig_coeffs = self._matrix_A[i, :]
         return self._get_basis_poly(eig_coeffs)
-
-    def get_ith_eigenmode_checked(self, i):
-        A = self._matrix_A
-
-        def eigenmode(tau, m):
-            res = 0
-            for k in range(len(self._basis_funcs)):
-                hk = self._basis_funcs[k]
-                res += A[i, k] * hk(tau, m)
-            return res
-        return eigenmode
 
     def jth_ith(self, i, j):
         eig_modei = self.get_ith_eigenmode(i)
